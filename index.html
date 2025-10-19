@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="hr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Micro:bit WASD Kontroler (Jednostavno)</title>
+    <style>
+      :root { color-scheme: dark light; }
+      body {
+        font-family: system-ui, sans-serif; margin: 0; padding: 24px;
+        display: grid; place-items: center; min-height: 100svh; background:#111; color:#fff;
+      }
+      .wrap { display: grid; gap: 16px; width: min(480px, 90vw); }
+      button {
+        cursor: pointer; border: none; border-radius: 12px; padding: 14px 16px;
+        background: #2b2b2b; color: #fff; font-size: 16px; transition: transform .05s, background .08s;
+      }
+      button:active { transform: scale(0.98); }
+      #connect.robotShow_connected { background: #1e8e3e; }
+      #disconnect { background: #8b1e1e; }
+      #disconnect:disabled { opacity: .5; cursor: not-allowed; }
+
+      /* Gumbi iste širine */
+      .btn-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .pad {
+        display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; user-select: none;
+      }
+      .pad .spacer { visibility: hidden; }
+
+      .hint {
+        font-size: 15px; opacity: .9; line-height: 1.8; background: #1b1b1b; padding: 12px 16px;
+        border-radius: 10px; text-align: left; white-space: pre-line;
+      }
+      a { color: #9ad; }
+
+      /* --- NOVO: aktivni (pritiskom) stil --- */
+      .pad button.active {
+        background: #0b3b66; /* tamno plava */
+        color: #fff;
+        transform: translateY(1px);
+      }
+    </style>
+  </head>
+  <body oncontextmenu="return false">
+    <div class="wrap">
+      <div class="btn-row">
+        <button id="connect">Poveži micro:bit</button>
+        <button id="disconnect" disabled>Odspoji</button>
+      </div>
+
+      <div class="pad" id="pad">
+        <div class="spacer"></div>
+        <button data-action="w">▲ Naprijed</button>
+        <div class="spacer"></div>
+
+        <button data-action="a">◀ Lijevo</button>
+        <button data-action="h">🔊 Sirena</button>
+        <button data-action="d">▶ Desno</button>
+
+        <div class="spacer"></div>
+        <button data-action="s">▼ Nazad</button>
+        <div class="spacer"></div>
+      </div>
+
+      <p class="hint"> Tipkovnica:
+        W = Naprijed
+        A = Lijevo
+        S = Nazad
+        D = Desno
+        Razmak = Sirena
+        (Držite za slanje, otpustite za zaustavljanje.)
+
+        Miš/Dodir:
+        Pritisnite i držite gumbe za kretanje.
+        Otpustite za zaustavljanje.
+      </p>
+    </div>
+
+    <script type="module">
+      const UART_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+      const UART_TX_CHARACTERISTIC_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+      const UART_RX_CHARACTERISTIC_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+      let uBitDevice = null;
+      let rxCharacteristic = null;
+
+      async function connectButtonPressed() {
+        try {
+          console.log("Zahtjev za Bluetooth uređajem…");
+          uBitDevice = await navigator.bluetooth.requestDevice({
+            filters: [{ namePrefix: "BBC micro:bit" }],
+            optionalServices: [UART_SERVICE_UUID],
+          });
+
+          uBitDevice.addEventListener("gattserverdisconnected", onDisconnected);
+
+          console.log("Povezivanje na GATT poslužitelj…");
+          const server = await uBitDevice.gatt.connect();
+
+          const service = await server.getPrimaryService(UART_SERVICE_UUID);
+
+          const txCharacteristic = await service.getCharacteristic(UART_TX_CHARACTERISTIC_UUID);
+          await txCharacteristic.startNotifications();
+          txCharacteristic.addEventListener("characteristicvaluechanged", onTxCharacteristicValueChanged);
+
+          rxCharacteristic = await service.getCharacteristic(UART_RX_CHARACTERISTIC_UUID);
+
+          document.getElementById("connect").classList.add("robotShow_connected");
+          document.getElementById("connect").textContent = "Povezano ✅ (klik za ponovno povezivanje)";
+          document.getElementById("disconnect").disabled = false;
+        } catch (err) {
+          console.error(err);
+          alert("Bluetooth pogreška: " + (err?.message || err));
+        }
+      }
+
+      function disconnectGatt() {
+        try {
+          if (!uBitDevice) return;
+          if (uBitDevice.gatt && uBitDevice.gatt.connected) {
+            console.log('Odspajanje uređaja...');
+            uBitDevice.gatt.disconnect();
+          }
+        } catch (err) {
+          console.error('Greška pri odspajanju:', err);
+        }
+      }
+
+      function onDisconnected(e) {
+        document.getElementById("connect").classList.remove("robotShow_connected");
+        document.getElementById("connect").textContent = "Poveži micro:bit";
+        document.getElementById("disconnect").disabled = true;
+        rxCharacteristic = null;
+        uBitDevice = null;
+      }
+
+      function onTxCharacteristicValueChanged(event) {
+        const bytes = new Uint8Array(event.target.value.buffer);
+        const text = String.fromCharCode(...bytes);
+        console.log("RX:", text);
+      }
+
+      let q = Promise.resolve();
+      function queueGatt(op) { q = q.then(op, op); return q; }
+
+      function sendUART(text) {
+        if (!rxCharacteristic) { console.warn("Nije povezano"); return; }
+        const enc = new TextEncoder();
+        const payload = enc.encode(text + "\n");
+        queueGatt(() => rxCharacteristic.writeValue(payload).catch(console.error));
+      }
+
+      const connectBtn = document.getElementById("connect");
+      const disconnectBtn = document.getElementById("disconnect");
+
+      connectBtn.addEventListener("click", connectButtonPressed);
+      disconnectBtn.addEventListener("click", disconnectGatt);
+
+      // Mapiranje tipke -> akcije
+      const keyToAction = new Map([
+        ["w", "w"],
+        ["a", "a"],
+        ["s", "s"],
+        ["d", "d"],
+        [" ", "h"],
+      ]);
+
+      // Pomoćna funkcija za dohvat gumba po akciji
+      function buttonForAction(action) {
+        return document.querySelector(`[data-action="${action}"]`);
+      }
+
+      // --- BIND: držanje mišem/dodirom ---
+      function bindHoldButton(btn) {
+        const action = btn.getAttribute("data-action");
+        const start = (e) => { e.preventDefault(); btn.classList.add('active'); sendUART(action); };
+        const stop  = () => { btn.classList.remove('active'); sendUART("x"); };
+        btn.addEventListener("mousedown", start);
+        btn.addEventListener("mouseup", stop);
+        btn.addEventListener("mouseleave", stop);
+        btn.addEventListener("touchstart", (e)=>{ e.preventDefault(); start(e); }, {passive:false});
+        btn.addEventListener("touchend", stop);
+        btn.addEventListener("touchcancel", stop);
+      }
+      document.querySelectorAll('[data-action]').forEach(bindHoldButton);
+
+      // Tipkovnica: pritisak i otpust
+      const downSet = new Set();
+      window.addEventListener("keydown", (e) => {
+        const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        if (!keyToAction.has(key)) return;
+        e.preventDefault();
+        if (downSet.has(key)) return; // već držimo
+        downSet.add(key);
+
+        const action = keyToAction.get(key);
+        const btn = buttonForAction(action);
+        if (btn) btn.classList.add('active');
+
+        sendUART(action);
+      });
+
+      window.addEventListener("keyup", (e) => {
+        const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        if (!keyToAction.has(key)) return;
+        e.preventDefault();
+
+        downSet.delete(key);
+        const action = keyToAction.get(key);
+        const btn = buttonForAction(action);
+        if (btn) btn.classList.remove('active');
+
+        // Na otpust šaljemo 'x' da robot stane
+        sendUART("x");
+      });
+
+      // Kad prozor izgubi fokus - očisti sve pritiske i boje
+      window.addEventListener("blur", () => {
+        if (downSet.size) {
+          downSet.clear();
+          document.querySelectorAll('[data-action]').forEach(b => b.classList.remove('active'));
+          sendUART("x");
+        }
+      });
+    </script>
+  </body>
+</html>
